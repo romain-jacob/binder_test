@@ -1,5 +1,7 @@
 """
 Helper functions used by the TriScale modules
+These functions are not part of TriScale API
+(ie, not meant to be called by the user)
 """
 
 import math
@@ -9,27 +11,13 @@ import pandas as pd
 import scipy
 import scipy.stats
 
-#import triplots -> Should not be necessary, plotting should be done in TriScale modules, not in the helpers
-
 def theilslopes_normalized(y,x,confidence,y_bounds=[],x_bounds=[], tolerance_value=[], max_pairs=10000):
-    '''
+    """
     Extend stats.theilslopes
     -> https://docs.scipy.org/doc/scipy-0.17.1/reference/generated/scipy.stats.theilslopes.html
 
-    by performing first a normalization of x and y to [-1;+1].
-
-    parameters:
-        y: 1-d np.array, the ind variate.
-        x: 1-d np array, the control variate
-        alpha:
-        y_bounds: list, [min,max] possible values of the y series
-        x_bounds: list, [min,max] possible values of the x series
-    '''
-
-    '''
-    Further input checking:
-    https://stackoverflow.com/questions/43748991/how-to-check-if-a-variable-is-either-a-python-list-numpy-array-or-pandas-series?rq=1
-    '''
+    First normalize x and y to [-1;+1].
+    """
 
     ## Parse the inputs
     mask = np.isnan(y)
@@ -104,19 +92,18 @@ def theilslopes_normalized(y,x,confidence,y_bounds=[],x_bounds=[], tolerance_val
 
     return np.array((reg_orig,reg_norm)), np.array(coord_trend_orig) , np.array(coord_tol_orig)
 
-
-
 def acorr(x):
     if type(x) != np.ndarray:
         x = np.array(x)
     x = x - x.mean()
     autocorr = np.correlate(x, x, mode='full')
     autocorr = autocorr[x.size-1:]
-    autocorr /= autocorr.max()
+    if not np.isnan(autocorr.max()) and autocorr.max() != 0:
+        autocorr /= autocorr.max()
 
     return autocorr
 
-def stationarity_test(x):
+def independence_test(x):
 
     corr = acorr(x)
     test = abs(corr[1:]) < (1.96/np.sqrt(len(x)))
@@ -151,10 +138,11 @@ def theil_convergence_test(x, y, y_bounds, confidence, tolerance, verbose=False)
     output_log = ''
     has_converged=True
 
-    if reg[2] > 0 or reg[3] < 0:
-        output_log += ('/!\\ Non-stationary /!\\\n')
-        output_log += ('The '+str(confidence)+'% CI on the link quality trend does not include 0.\n')
-        has_converged=False
+    # if reg[2] > 0 or reg[3] < 0:
+    #     output_log += ('/!\\ Non-stationary /!\\\n')
+    #     output_log += ('The '+str(confidence)+'% CI on the link quality trend does not include 0.\n')
+    #     output_log += (str(confidence)+'% CI(scaled): \t['+str(reg[2])+' , '+str(reg[3])+']\n')
+    #     has_converged=False
 
     if reg[2] < -tolerance or reg[3] > tolerance:
         output_log += ('/!\\ Non-stationary /!\\\n')
@@ -175,10 +163,6 @@ def theil_convergence_test(x, y, y_bounds, confidence, tolerance, verbose=False)
     return (has_converged, coord_trend, coord_tol)
 
 def convergence_test(x, y, y_bounds, confidence, tolerance, verbose=False):
-    '''
-    Doing the convergence test on min-max is not necessary. If the data diverges, this will be caught
-    by the increasing CI on the slope value.
-    '''
 
     if isinstance(x, pd.DatetimeIndex):
         x_reg = x.astype(np.int64) // 10**9
@@ -213,6 +197,28 @@ def min_number_samples(percentile,confidence,robustness=0):
         raise ValueError("Invalid robustness: "+repr(robustness)+". Provide a positive integer.")
 
     ##
+    # Single-sided interval
+    ##
+
+    N_single = math.ceil(math.log(1-confidence/100)/math.log(1-percentile/100))
+
+    if robustness:
+
+        # Make sure the first N is large enough
+        N_single = max(N_single, 2*(robustness+1))
+
+        # Increse N until the desired confidence is reached
+        while True:
+            # compute P( x_(1+r) <= Pp )
+            bd = scipy.stats.binom(N_single,percentile/100)
+            prob = 1-np.cumsum([bd.pmf(k) for k in range(robustness+1)])[-1]
+            # test
+            if prob >= (confidence/100):
+                break
+            else:
+                N_single += 1
+
+    ##
     # Double-sided interval
     ##
 
@@ -238,32 +244,10 @@ def min_number_samples(percentile,confidence,robustness=0):
                     N_double += 1
 
     else:
-        # Double-sided interval is irrelevant
-        N_double = np.nan
+        # Double-sided interval is irrelevant -> same as single-sided
+        N_double = N_single
 
-    ##
-    # Single-sided interval
-    ##
-
-    N_single = math.ceil(math.log(1-confidence/100)/math.log(1-percentile/100))
-
-    if robustness:
-
-        # Make sure the first N is large enough
-        N_single = max(N_single, 2*(robustness+1))
-
-        # Increse N until the desired confidence is reached
-        while True:
-            # compute P( x_(1+r) <= Pp )
-            bd = scipy.stats.binom(N_single,percentile/100)
-            prob = 1-np.cumsum([bd.pmf(k) for k in range(robustness+1)])[-1]
-            # test
-            if prob >= (confidence/100):
-                break
-            else:
-                N_single += 1
-
-    return N_single,N_double
+    return N_single, N_double
 
 
 
@@ -271,7 +255,9 @@ def min_number_samples(percentile,confidence,robustness=0):
 # + polish the return data format
 # + add a "verbose" parameter for printing
 def ThompsonCI( n_samples, percentile, confidence, CI_class=None, verbose=False):
-    "This function computes the confidence interval for the given percentile of the data array, with the given confidence level"
+    '''This function computes the confidence interval for the given percentile
+    of the data array, with the given confidence level.
+    '''
 
 
     todo = ''
@@ -300,18 +286,6 @@ def ThompsonCI( n_samples, percentile, confidence, CI_class=None, verbose=False)
     if percentile == 50 and CI_class is None:
         raise ValueError("CI_class parameter is required for computing a confidence interval for the median. Valid 'CI_class' values: 'one-sided' or 'two-sided'")
 
-
-#     if percentile > 50 and bound_side == 'lower':
-#         print("Requested a lower-bound for a high percentile (i.e., p > 50). Changed to upper-bound.")
-#         bound_side = 'upper'
-#     if percentile < 50 and bound_side == 'upper':
-#         print("Requested a upper-bound for a low percentile (i.e., p < 50). Changed to lower-bound.")
-#         bound_side = 'lower'
-#     elif percentile > 50:
-#         bound_side = 'upper'
-#     elif percentile < 50:
-#         bound_side = 'lower'
-
     # Always work with lower percentiles and compute a lower-bound (single-sided confidence interval)
     if percentile > 50:
         p_high = percentile
@@ -320,27 +294,6 @@ def ThompsonCI( n_samples, percentile, confidence, CI_class=None, verbose=False)
         p_low  = percentile
         p_high = 100 - percentile
 
-
-    # Initializing outputs
-#     serie_cnt = 0
-#     CI_bounds = []
-#     if plot:
-#         row_height = 100
-#         figure = make_subplots(rows=len(data_series),
-#                                cols=1,
-#                                row_heights=(100*np.ones(len(data_series),)).tolist(),
-#                                shared_xaxes=True,
-#                                shared_yaxes=True,
-#                               )
-
-#     for serie in data_series:
-#         serie_cnt += 1
-
-        # Make sure data is sorted
-#         serie.sort()
-
-        # get the index ranges
-#         N = len(serie)
     Nmax = int(n_samples/2)
     firstel = range(Nmax)
     lastel = [n_samples-1-k for k in firstel]
@@ -381,17 +334,6 @@ def ThompsonCI( n_samples, percentile, confidence, CI_class=None, verbose=False)
                     output_log += ('of %.0f%%-confidence intervals for P_%.0f and P_%.0f') % ( confidence, p_low, p_high )
                     output_log += (' (one-sided).')
 
-
-#                 if bound_side == 'lower':
-#                     print('%g-th percentile is greater or equal to %g with %g%% confidence.' %
-#                           (p_low, serie[firstel[k]], confidence))
-# #                     CI_bounds.append([ serie[firstel[k]], firstel[k]+1 ])
-#                     CI_bounds.append( serie[firstel[k]] )
-#                 else:
-#                     print('%g-th percentile is less or equal to %g with %g%% confidence.' %
-#                           (p_high, serie[lastel[k]], confidence))
-# #                     CI_bounds.append([ serie[lastel[k]], lastel[k]+1 ])
-#                     CI_bounds.append( serie[lastel[k]] )
             break
 
     if CI is None:
@@ -413,14 +355,9 @@ def ThompsonCI( n_samples, percentile, confidence, CI_class=None, verbose=False)
     return CI
 
 
-
-
-
-def repeatability_test( data, confidence_repeatability=95, tolerance_repeatability=None):
-        '''
-        if tolerance_repeatability is None, the function returns the error; otherwise it test the error against the tolerance
-        => this does not make much sense... would rather have a 'compute error' function.
-        '''
+def repeatability_test( data,
+                        confidence_repeatability=95,
+                        tolerance_repeatability=None):
 
         # Make sure data is sorted
         data.sort()
@@ -444,9 +381,6 @@ def repeatability_test( data, confidence_repeatability=95, tolerance_repeatabili
         if serie_bound is None:
             print('You do not have enough data to report a %.0f%s confidence interval. Repeatability cannot be assessed with that level of confidence.' % (confidence_repeatability,'%'))
             return
-
-#         print(data)
-#         print(serie_bound)
 
         # compute the CI error and compare against the tolerance
         CI_mean = ( data[lastel[k]] + data[firstel[k]] ) / 2
